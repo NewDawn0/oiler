@@ -1,0 +1,9 @@
+[package]
+name = "oiler"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/NewDawn0/oiler"
+
+[dependencies]
+num-traits = "0.2.19" # Temporary
