@@ -48,25 +48,28 @@ impl<T: Numeric, const N: usize, const M: usize> Matrix<T, N, M> {
     pub fn transpose(self) -> Matrix<T, M, N> {
         Matrix(array::from_fn(|i| array::from_fn(|j| self.0[j][i])))
     }
-    /// Conjugate transpose matrix.
-    #[inline(always)]
-    pub fn conjugate_transpose(self) -> Matrix<T, M, N>
-    where
-        T: Conjugate,
-    {
-        Matrix(array::from_fn(|i| array::from_fn(|j| self.0[j][i].conj())))
+
+    /// Create matrix from column vectors.
+    pub fn from_column_vectors<const S: usize>(cols: [Vector<T, M>; S]) -> Matrix<T, S, M> {
+        Matrix(array::from_fn(|i| array::from_fn(|j| cols[j].0[i])))
+    }
+    /// Create matrix from row vectors.
+    pub fn from_row_vectors<const S: usize>(rows: [Vector<T, N>; S]) -> Matrix<T, N, S> {
+        Matrix(array::from_fn(|i| rows[i].0))
+    }
+
+    /// Row space basis.
+    pub fn row_space(&self) -> Box<[Vector<T, N>]> {
+        self.cr_factorize().1
     }
 
     /// Column space basis.
-    pub fn column_space<const R: usize>(&self) -> [Vector<T, M>; R] {
-        self.cr_factorize::<R>().0.as_column_vectors()
-    }
-    /// Row space basis.
-    pub fn row_space<const R: usize>(&self) -> [Vector<T, N>; R] {
-        self.cr_factorize::<R>().1.as_row_vectors()
+    pub fn column_space(&self) -> Box<[Vector<T, M>]> {
+        self.cr_factorize().0
     }
 
     /// Matrix rank.
+
     pub fn rank(&self) -> usize {
         let mut rows = self.as_row_vectors();
         let mut r = 0;
@@ -94,45 +97,6 @@ impl<T: Numeric, const N: usize, const M: usize> Matrix<T, N, M> {
         r
     }
 
-    /// Projection matrix onto the column space.
-    pub fn projection_matrix<const R: usize>(&self) -> Matrix<T, M, M>
-    where
-        T: Conjugate,
-    {
-        let (c, _) = self.cr_factorize::<R>();
-        let basis = c.as_column_vectors();
-        // Orthogonalize basis using Gram-Schmidt
-        let mut orthogonal_basis: [Vector<T, M>; R] = [Vector::<T, M>::zero(); R];
-        let mut count = 0;
-        for i in 0..R {
-            let mut v = basis[i];
-            for j in 0..count {
-                v = v - basis[i].project_onto(&orthogonal_basis[j]);
-            }
-            if v.norm_sq() != T::ZERO {
-                orthogonal_basis[count] = v;
-                count += 1;
-            }
-        }
-
-        let mut p = Matrix::<T, M, M>::zero();
-        for i in 0..count {
-            let v = orthogonal_basis[i];
-            let v_norm_sq = v.norm_sq();
-            let outer = Matrix::<T, M, M>::from_outer_product(v, Vector(v.0.map(|e| e.conj())));
-            p += outer / v_norm_sq;
-        }
-        p
-    }
-
-    /// Project vector onto the column space.
-    pub fn project_vector<const R: usize>(&self, vec: Vector<T, M>) -> Vector<T, M>
-    where
-        T: Conjugate,
-    {
-        self.projection_matrix::<R>() * vec
-    }
-
     #[inline(always)]
     fn find_pivot(rows: &[Vector<T, N>], col: usize, start_row: usize) -> (usize, T) {
         let mut best = start_row;
@@ -148,12 +112,12 @@ impl<T: Numeric, const N: usize, const M: usize> Matrix<T, N, M> {
     }
 
     /// CR Factorization: decomposition into basis columns (C) and RREF non-zero rows (R).
-    pub fn cr_factorize<const R: usize>(&self) -> (Matrix<T, R, M>, Matrix<T, N, R>) {
+    pub fn cr_factorize(&self) -> (Box<[Vector<T, M>]>, Box<[Vector<T, N>]>) {
         let mut rows = self.as_row_vectors();
-        let mut pivot_indices = [0usize; R];
+        let mut pivot_indices = Vec::new();
         let mut pivot_row = 0;
         for j in 0..N {
-            if pivot_row >= R || pivot_row >= M {
+            if pivot_row >= M {
                 break;
             }
             let (best_row, max) = Self::find_pivot(&rows, j, pivot_row);
@@ -172,19 +136,20 @@ impl<T: Numeric, const N: usize, const M: usize> Matrix<T, N, M> {
                     }
                 }
             }
-            pivot_indices[pivot_row] = j;
+            pivot_indices.push(j);
             pivot_row += 1;
         }
-        assert_eq!(pivot_row, R, "Provided rank R does not match actual rank");
         let cols = self.as_column_vectors();
-        (
-            Matrix(array::from_fn(|i| {
-                array::from_fn(|j| cols[pivot_indices[j]].0[i])
-            })),
-            Matrix(array::from_fn(|i| rows[i].0)),
-        )
+        let c = (0..pivot_row)
+            .map(|i| cols[pivot_indices[i]])
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+        let r = (0..pivot_row)
+            .map(|i| rows[i])
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+        (c, r)
     }
-
     /// Solve linear system Ax = b using Gaussian elimination
     pub fn gaussian_eliminate(&self, vec: &Vector<T, M>) -> Vector<T, N> {
         let mut b = vec.as_array();
@@ -305,7 +270,11 @@ impl<T: Numeric, const N: usize> Matrix<T, N, N> {
                 }
             }
         }
-        if swaps % 2 == 1 { T::ZERO - det } else { det }
+        if swaps % 2 == 1 {
+            T::ZERO - det
+        } else {
+            det
+        }
     }
 
     /// Invert the matrix. Returns None if singular.
@@ -561,9 +530,16 @@ mod tests {
             [2.0, 4.0, 1.0, 4.0],
             [3.0, 6.0, 2.0, 5.0],
         ]);
-        let (c, r) = a.cr_factorize::<2>();
-        assert_eq!(c.0[0].len(), 2, "CR column space dim");
-        assert_eq!(r.0.len(), 2, "CR row space dim");
+        let (c, r) = a.cr_factorize();
+        let columns = [Vector::from([1.0, 2.0, 3.0]), Vector::from([0.0, 1.0, 2.0])];
+        let rows = [
+            Vector::from([1.0, 2.0, 0.0, 3.0]),
+            Vector::from([0.0, 0.0, 1.0, -2.0]),
+        ];
+        assert_eq!(c.len(), 2, "CR column space dim");
+        assert_eq!(r.len(), 2, "CR row space dim");
+        assert_eq!(&*c, &columns, "Columns failed");
+        assert_eq!(&*r, &rows, "Rows failed");
 
         let m2 = Matrix([[2.0, 1.0], [1.0, 1.0]]);
         let m2inv = Matrix([[1.0, -1.0], [-1.0, 2.0]]);
@@ -574,27 +550,13 @@ mod tests {
         assert_eq!(singular.invert(), None, "singular inv");
     }
     #[test]
-    fn test_matrix_projection() {
-        let a = Matrix([[1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]);
-        let p = a.projection_matrix::<2>();
-        let b = Vector([1.0, 2.0, 3.0]);
-        let pb = a.project_vector::<2>(b);
-
-        // P^2 = P
-        assert!(
-            (Numeric::abs((p * p).0[0][0] - p.0[0][0])) < f64::EPSILON * 100.0,
-            "P^2 = P check"
-        );
-
-        // Pb is in column space? (b - Pb) should be orthogonal to columns of a
-        let diff = b - pb;
-        assert!(
-            Numeric::abs(diff.dotp(&Vector([1.0, 1.0, 0.0]))) < f64::EPSILON * 100.0,
-            "orthogonality check 1"
-        );
-        assert!(
-            Numeric::abs(diff.dotp(&Vector([0.0, 1.0, 1.0]))) < f64::EPSILON * 100.0,
-            "orthogonality check 2"
+    fn test_matrix_linear_sys() {
+        let m = Matrix([[1.0, 2.0], [3.0, 4.0]]);
+        let b = Vector([5.0, 11.0]);
+        assert_eq!(
+            m.gaussian_eliminate(&b),
+            Vector([1.0, 2.0]),
+            "gauss elimination"
         );
     }
 }

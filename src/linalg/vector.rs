@@ -56,7 +56,6 @@ impl<T: Numeric, const N: usize> Vector<T, N> {
     pub const fn as_array(self) -> [T; N] {
         self.0
     }
-
     /// Dot product.
     #[inline(always)]
     pub fn dotp(&self, other: &Self) -> T {
@@ -66,32 +65,10 @@ impl<T: Numeric, const N: usize> Vector<T, N> {
         }
         sum
     }
-
-    /// Inner product (Hermitian for complex numbers).
-    #[inline(always)]
-    pub fn inner_product(&self, other: &Self) -> T
-    where
-        T: Conjugate,
-    {
-        let mut sum = T::ZERO;
-        for i in 0..N {
-            sum += self.0[i] * other.0[i].conj();
-        }
-        sum
-    }
-
     /// Squared magnitude.
     #[inline(always)]
     pub fn magnitude_sq(&self) -> T {
         self.dotp(self)
-    }
-    /// Squared norm (using inner product).
-    #[inline(always)]
-    pub fn norm_sq(&self) -> T
-    where
-        T: Conjugate,
-    {
-        self.inner_product(self)
     }
 
     /// Scaled subtraction: self -= other * factor (starting from index).
@@ -132,26 +109,6 @@ impl<T: Numeric, const N: usize> Vector<T, N> {
         // Note: Currently only checks pairwise colinearity.
         // For general linear dependence, a rank-based check is required.
         vecs.iter().any(|e| self.is_colinear_with(e))
-    }
-
-    /// Project vector onto another vector.
-    pub fn project_onto(&self, target: &Self) -> Self
-    where
-        T: Conjugate,
-    {
-        let t_norm_sq = target.norm_sq();
-        if t_norm_sq == T::ZERO {
-            return Self::zero();
-        }
-        *target * (self.inner_product(target) / t_norm_sq)
-    }
-
-    /// Vector rejection from another vector.
-    pub fn reject_from(&self, target: &Self) -> Self
-    where
-        T: Conjugate,
-    {
-        *self - self.project_onto(target)
     }
 }
 
