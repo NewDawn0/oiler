@@ -1,31 +1,87 @@
 use std::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Sub, SubAssign};
 
-use num_traits::Float;
-
-pub trait Field:
+/// Trait defining basic numeric operations for library types.
+pub trait Numeric:
     Sized
-    + Copy
     + Clone
-    + PartialOrd
+    + Copy
     + PartialEq
+    + PartialOrd
     + Add<Output = Self>
-    + Mul<Output = Self>
-    + Div<Output = Self>
+    + AddAssign<Self>
     + Sub<Output = Self>
-    + AddAssign
-    + DivAssign
-    + MulAssign
-    + SubAssign
-    + Float // Temporary (used by vec magnitude)
-    + From<u8> // Used for comparing
+    + SubAssign<Self>
+    + Mul<Output = Self>
+    + MulAssign<Self>
+    + Div<Output = Self>
+    + DivAssign<Self>
 {
+    /// Additive identity.
+    const ZERO: Self;
+    /// Multiplicative identity.
+    const ONE: Self;
+    /// Absolute value.
+    fn abs(self) -> Self;
 }
 
-macro_rules! gen_impls {
-    ($target:ty, ($($type:ty),*)) => {
-        $(impl $target for $type {})*
+/// Trait for types that support conjugation (e.g., complex numbers).
+pub trait Conjugate {
+    /// Returns the conjugate of the value.
+    fn conj(self) -> Self;
+}
+
+macro_rules! impl_numeric_unsigned {
+    ($($target:ty),*) => {
+        $(
+            impl Numeric for $target {
+                const ZERO: Self = 0 as Self;
+                const ONE: Self = 1 as Self;
+                #[inline(always)]
+                fn abs(self) -> Self { self }
+            }
+            impl Conjugate for $target {
+                #[inline(always)]
+                fn conj(self) -> Self { self }
+            }
+        )*
     };
 }
-// gen_impls!(Field, (i8, i16, i32, i64, i128));
-// gen_impls!(Field, (u8, u16, u32, u64, u128));
-gen_impls!(Field, (f32, f64));
+macro_rules! impl_numeric_signed {
+    ($($target:ty),*) => {
+        $(
+            impl Numeric for $target {
+                const ZERO: Self = 0 as Self;
+                const ONE: Self = 1 as Self;
+                #[inline(always)]
+                fn abs(self) -> Self {
+                    if self >= Self::ZERO { self } else { -self }
+                }
+            }
+            impl Conjugate for $target {
+                #[inline(always)]
+                fn conj(self) -> Self { self }
+            }
+        )*
+    };
+}
+
+macro_rules! impl_numeric_float {
+    ($($target:ty),*) => {
+        $(
+            impl Numeric for $target {
+                const ZERO: Self = 0.0 as Self;
+                const ONE: Self = 1.0 as Self;
+                #[inline(always)]
+                fn abs(self) -> Self { self.abs() }
+            }
+            impl Conjugate for $target {
+                #[inline(always)]
+                fn conj(self) -> Self { self }
+            }
+        )*
+    };
+}
+
+impl_numeric_unsigned!(u8, u16, u32, u64, u128, usize);
+impl_numeric_signed!(i8, i16, i32, i64, i128, isize);
+impl_numeric_float!(f32, f64);
