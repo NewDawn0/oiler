@@ -24,12 +24,6 @@ pub trait Numeric:
     fn abs(self) -> Self;
 }
 
-/// Trait for types that support conjugation (e.g., complex numbers).
-pub trait Conjugate {
-    /// Returns the conjugate of the value.
-    fn conj(self) -> Self;
-}
-
 macro_rules! impl_numeric_unsigned {
     ($($target:ty),*) => {
         $(
@@ -38,10 +32,6 @@ macro_rules! impl_numeric_unsigned {
                 const ONE: Self = 1 as Self;
                 #[inline(always)]
                 fn abs(self) -> Self { self }
-            }
-            impl Conjugate for $target {
-                #[inline(always)]
-                fn conj(self) -> Self { self }
             }
         )*
     };
@@ -57,10 +47,6 @@ macro_rules! impl_numeric_signed {
                     if self >= Self::ZERO { self } else { -self }
                 }
             }
-            impl Conjugate for $target {
-                #[inline(always)]
-                fn conj(self) -> Self { self }
-            }
         )*
     };
 }
@@ -73,10 +59,6 @@ macro_rules! impl_numeric_float {
                 const ONE: Self = 1.0 as Self;
                 #[inline(always)]
                 fn abs(self) -> Self { self.abs() }
-            }
-            impl Conjugate for $target {
-                #[inline(always)]
-                fn conj(self) -> Self { self }
             }
         )*
     };

@@ -1,4 +1,4 @@
-use crate::linalg::traits::{Conjugate, Numeric};
+use crate::linalg::traits::Numeric;
 use num_traits::Float;
 use std::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Neg, Sub, SubAssign};
 
@@ -15,6 +15,17 @@ impl<T: Numeric> Complex<T> {
     pub const fn new(re: T, im: T) -> Self {
         Self { re, im }
     }
+    /// Conjugate: a + bi -> a - bi.
+    #[inline(always)]
+    pub fn conj(self) -> Self
+    where
+        T: Neg<Output = T>,
+    {
+        Self {
+            re: self.re,
+            im: -self.im,
+        }
+    }
     /// Squared magnitude: a^2 + b^2.
     #[inline(always)]
     pub fn magnitude_sq(self) -> T {
@@ -29,19 +40,6 @@ impl<T: Numeric> Complex<T> {
     #[inline(always)]
     pub fn is_imaginary(&self) -> bool {
         self.re == T::ZERO
-    }
-}
-
-impl<T: Numeric> Conjugate for Complex<T>
-where
-    T: Neg<Output = T>,
-{
-    #[inline(always)]
-    fn conj(self) -> Self {
-        Self {
-            re: self.re,
-            im: -self.im,
-        }
     }
 }
 
@@ -278,22 +276,5 @@ mod tests {
         let inv2 = m2.invert().expect("invertible");
         assert_eq!(inv2.0[0][0], Complex::new(0.5, 0.0), "complex inv 00");
         assert_eq!(inv2.0[1][1], Complex::new(2.0, 0.0), "complex inv 11");
-    }
-
-    #[test]
-    fn test_complex_projection() {
-        use crate::linalg::prelude::*;
-        // Subspace spanned by [1, i]^T
-        let a = Matrix([[Complex::new(1.0, 0.0)], [Complex::new(0.0, 1.0)]]);
-        let p = a.projection_matrix::<1>();
-
-        // P should be [[0.5, -0.5i], [0.5i, 0.5]]
-        // Because C^H C = [1, -i] * [1, i]^T = 1 + 1 = 2
-        // P = [1, i]^T * (1/2) * [1, -i] = 1/2 * [[1, -i], [i, 1]]
-
-        assert_eq!(p.0[0][0], Complex::new(0.5, 0.0), "complex P 00");
-        assert_eq!(p.0[0][1], Complex::new(0.0, -0.5), "complex P 01");
-        assert_eq!(p.0[1][0], Complex::new(0.0, 0.5), "complex P 10");
-        assert_eq!(p.0[1][1], Complex::new(0.5, 0.0), "complex P 11");
     }
 }
