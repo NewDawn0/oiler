@@ -1,197 +1,600 @@
 use std::{
     array,
     fmt::{self, Debug},
-    ops::{Add, Div, Index, IndexMut, Mul, Sub},
-    usize,
+    ops::{Add, AddAssign, Div, DivAssign, Index, IndexMut, Mul, MulAssign, Sub, SubAssign},
 };
 
-use crate::linalg::{traits::Field, vector::Vector};
+use crate::linalg::prelude::*;
 
+#[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
-pub struct Matrix<T: Field, const N: usize, const M: usize>([[T; N]; M]);
-impl<T: Field, const N: usize, const M: usize> Matrix<T, N, M> {
-    pub fn convert<E: Field + From<T>>(self) -> Matrix<E, N, M> {
+pub struct Matrix<T: Numeric, const N: usize, const M: usize>(pub(crate) [[T; N]; M]);
+
+impl<T: Numeric, const N: usize, const M: usize> Matrix<T, N, M> {
+    /// Create matrix from array.
+    #[inline(always)]
+    pub const fn new(vals: [[T; N]; M]) -> Self {
+        Self(vals)
+    }
+    /// Zero matrix.
+    #[inline(always)]
+    pub const fn zero() -> Self {
+        Self([[T::ZERO; N]; M])
+    }
+    /// Matrix from outer product of two vectors.
+    #[inline(always)]
+    pub fn from_outer_product(col_v: Vector<T, M>, row_v: Vector<T, N>) -> Self {
+        Self(array::from_fn(|i| {
+            array::from_fn(|j| col_v.0[i] * row_v.0[j])
+        }))
+    }
+    /// Convert underlying numeric type.
+    #[inline(always)]
+    pub fn convert<E: Numeric + From<T>>(self) -> Matrix<E, N, M> {
         Matrix(self.0.map(|row| row.map(<E as From<T>>::from)))
     }
-    // Turns Matrix<T, N, M> into Matrix<T, M, N>
-    pub fn transpose(self) -> Matrix<T, M, N> {
-        Matrix(array::from_fn(|i| array::from_fn(|j| self[(j, i)])))
-    }
-    pub fn as_column_arrays(self) -> [[T; M]; N] {
-        self.transpose().as_row_arrays()
-    }
-    pub fn from_outer_product(row_vec: Vector<T, M>, col_vec: Vector<T, M>) -> Self {
-        let mut data = Self::zero();
-        for i in 0..N {
-            for j in 0..M {
-                data[(i, j)] = row_vec[i] * col_vec[j]
-            }
-        }
-        data
-    }
+    /// Matrix as array of column vectors.
+    #[inline(always)]
     pub fn as_column_vectors(self) -> [Vector<T, M>; N] {
-        self.as_column_arrays().map(Vector::from)
+        array::from_fn(|j| Vector(array::from_fn(|i| self.0[i][j])))
     }
-    pub fn as_row_arrays(self) -> [[T; N]; M] {
-        self.0
-    }
+    /// Matrix as array of row vectors.
+    #[inline(always)]
     pub fn as_row_vectors(self) -> [Vector<T, N>; M] {
         self.0.map(Vector::from)
     }
+    /// Transpose matrix.
+    #[inline(always)]
+    pub fn transpose(self) -> Matrix<T, M, N> {
+        Matrix(array::from_fn(|i| array::from_fn(|j| self.0[j][i])))
+    }
+    /// Conjugate transpose matrix.
+    #[inline(always)]
+    pub fn conjugate_transpose(self) -> Matrix<T, M, N>
+    where
+        T: Conjugate,
+    {
+        Matrix(array::from_fn(|i| array::from_fn(|j| self.0[j][i].conj())))
+    }
+
+    /// Column space basis.
+    pub fn column_space<const R: usize>(&self) -> [Vector<T, M>; R] {
+        self.cr_factorize::<R>().0.as_column_vectors()
+    }
+    /// Row space basis.
+    pub fn row_space<const R: usize>(&self) -> [Vector<T, N>; R] {
+        self.cr_factorize::<R>().1.as_row_vectors()
+    }
+
+    /// Matrix rank.
     pub fn rank(&self) -> usize {
-        self.column_space().len()
+        let mut rows = self.as_row_vectors();
+        let mut r = 0;
+        for j in 0..N {
+            if r >= M {
+                break;
+            }
+            let (best_row, max) = Self::find_pivot(&rows, j, r);
+            if max == T::ZERO {
+                continue;
+            }
+            rows.swap(r, best_row);
+            let p_val = rows[r].0[j];
+            let row_p = rows[r];
+            for i in 0..M {
+                if i != r {
+                    let factor = rows[i].0[j] / p_val;
+                    if factor != T::ZERO {
+                        rows[i].sub_assign_scaled_from(&row_p, factor, j);
+                    }
+                }
+            }
+            r += 1;
+        }
+        r
     }
-    pub fn column_space(&self) -> Vec<Vector<T, M>> {
-        Vector::span(&self.as_column_vectors())
+
+    /// Projection matrix onto the column space.
+    pub fn projection_matrix<const R: usize>(&self) -> Matrix<T, M, M>
+    where
+        T: Conjugate,
+    {
+        let (c, _) = self.cr_factorize::<R>();
+        let basis = c.as_column_vectors();
+        // Orthogonalize basis using Gram-Schmidt
+        let mut orthogonal_basis: [Vector<T, M>; R] = [Vector::<T, M>::zero(); R];
+        let mut count = 0;
+        for i in 0..R {
+            let mut v = basis[i];
+            for j in 0..count {
+                v = v - basis[i].project_onto(&orthogonal_basis[j]);
+            }
+            if v.norm_sq() != T::ZERO {
+                orthogonal_basis[count] = v;
+                count += 1;
+            }
+        }
+
+        let mut p = Matrix::<T, M, M>::zero();
+        for i in 0..count {
+            let v = orthogonal_basis[i];
+            let v_norm_sq = v.norm_sq();
+            let outer = Matrix::<T, M, M>::from_outer_product(v, Vector(v.0.map(|e| e.conj())));
+            p += outer / v_norm_sq;
+        }
+        p
     }
-    pub fn zero() -> Self {
-        Self([[<T as From<u8>>::from(0); N]; M])
+
+    /// Project vector onto the column space.
+    pub fn project_vector<const R: usize>(&self, vec: Vector<T, M>) -> Vector<T, M>
+    where
+        T: Conjugate,
+    {
+        self.projection_matrix::<R>() * vec
+    }
+
+    #[inline(always)]
+    fn find_pivot(rows: &[Vector<T, N>], col: usize, start_row: usize) -> (usize, T) {
+        let mut best = start_row;
+        let mut max = rows[start_row].0[col].abs();
+        for i in (start_row + 1)..rows.len() {
+            let val = rows[i].0[col].abs();
+            if val > max {
+                max = val;
+                best = i;
+            }
+        }
+        (best, max)
+    }
+
+    /// CR Factorization: decomposition into basis columns (C) and RREF non-zero rows (R).
+    pub fn cr_factorize<const R: usize>(&self) -> (Matrix<T, R, M>, Matrix<T, N, R>) {
+        let mut rows = self.as_row_vectors();
+        let mut pivot_indices = [0usize; R];
+        let mut pivot_row = 0;
+        for j in 0..N {
+            if pivot_row >= R || pivot_row >= M {
+                break;
+            }
+            let (best_row, max) = Self::find_pivot(&rows, j, pivot_row);
+            if max == T::ZERO {
+                continue;
+            }
+            rows.swap(pivot_row, best_row);
+            let p_val = rows[pivot_row].0[j];
+            rows[pivot_row] /= p_val;
+            let row_p = rows[pivot_row];
+            for i in 0..M {
+                if i != pivot_row {
+                    let factor = rows[i].0[j];
+                    if factor != T::ZERO {
+                        rows[i].sub_assign_scaled_from(&row_p, factor, j);
+                    }
+                }
+            }
+            pivot_indices[pivot_row] = j;
+            pivot_row += 1;
+        }
+        assert_eq!(pivot_row, R, "Provided rank R does not match actual rank");
+        let cols = self.as_column_vectors();
+        (
+            Matrix(array::from_fn(|i| {
+                array::from_fn(|j| cols[pivot_indices[j]].0[i])
+            })),
+            Matrix(array::from_fn(|i| rows[i].0)),
+        )
+    }
+
+    /// Solve linear system Ax = b using Gaussian elimination
+    pub fn gaussian_eliminate(&self, vec: &Vector<T, M>) -> Vector<T, N> {
+        let mut b = vec.as_array();
+        let mut rows = self.as_row_vectors();
+        let pivot_lim = M.min(N);
+        for i in 0..pivot_lim {
+            let (row, _) = Self::find_pivot(&rows, i, i);
+            if row != i {
+                rows.swap(row, i);
+                b.swap(row, i);
+            }
+            let val = rows[i].0[i];
+            if val != T::ZERO {
+                let (done, remaining) = rows.split_at_mut(i + 1);
+                let row_i = &done[i];
+                let (b_done, b_remaining) = b.split_at_mut(i + 1);
+                let b_i = b_done[i];
+                for (j, row_j) in remaining.iter_mut().enumerate() {
+                    let factor_val = row_j.0[i];
+                    if factor_val != T::ZERO {
+                        let factor = factor_val / val;
+                        row_j.sub_assign_scaled_from(row_i, factor, i);
+                        b_remaining[j] -= b_i * factor;
+                    }
+                }
+            }
+        }
+        // Back substitution
+        let mut out: Vector<T, N> = Vector::zero();
+        for i in (0..pivot_lim).rev() {
+            let mut sum = T::ZERO;
+            for j in (i + 1)..N {
+                sum += rows[i].0[j] * out.0[j];
+            }
+            let diag = rows[i].0[i];
+            if diag != T::ZERO {
+                out.0[i] = (b[i] - sum) / diag;
+            }
+        }
+        out
     }
 }
 
-// Square matrices
-impl<T: Field, const N: usize> Matrix<T, N, N> {
-    pub fn from_diagonal(vals: [T; N]) -> Self {
-        Self(array::from_fn(|i| {
-            array::from_fn(|j| match i == j {
-                true => vals[i],
-                false => T::zero(),
-            })
-        }))
-    }
+impl<T: Numeric, const N: usize> Matrix<T, N, N> {
+    /// Identity matrix.
     pub fn identity() -> Self {
-        Self(array::from_fn(|i| {
-            array::from_fn(|j| match i == j {
-                true => <T as From<u8>>::from(1),
-                false => <T as From<u8>>::from(0),
-            })
-        }))
+        let mut out = Self::zero();
+        for i in 0..N {
+            out.0[i][i] = T::ONE;
+        }
+        out
     }
+    /// Matrix with given values on the diagonal.
+    pub fn from_diagonal(vals: [T; N]) -> Self {
+        let mut out = Self::zero();
+        for i in 0..N {
+            out.0[i][i] = vals[i];
+        }
+        out
+    }
+    /// Create upper triangular matrix from slice.
     pub fn from_upper_triangular(vals: &[T]) -> Self {
-        assert_eq!(vals.len(), N * (N + 1) / 2, "Invalid values size");
-        let mut data = [[T::zero(); N]; N];
-        let mut vals_idx = 0;
+        let mut data = [[T::ZERO; N]; N];
+        let mut idx = 0;
         for i in 0..N {
             let len = N - i;
-            data[i][i..N].copy_from_slice(&vals[vals_idx..vals_idx + len]);
-            vals_idx += len;
+            data[i][i..N].copy_from_slice(&vals[idx..idx + len]);
+            idx += len;
         }
         Self(data)
     }
+    /// Create lower triangular matrix from slice.
     pub fn from_lower_triangular(vals: &[T]) -> Self {
-        assert_eq!(vals.len(), N * (N + 1) / 2, "Invalid vals size");
-        let mut data = [[T::zero(); N]; N];
-        let mut vals_idx = 0;
+        let mut data = [[T::ZERO; N]; N];
+        let mut idx = 0;
         for i in 0..N {
             let len = i + 1;
-            data[i][..len].copy_from_slice(&vals[vals_idx..vals_idx + len]);
-            vals_idx += len;
+            data[i][..len].copy_from_slice(&vals[idx..idx + len]);
+            idx += len;
         }
         Self(data)
     }
+    /// Create symmetric matrix from upper triangular slice.
     pub fn from_symmetric(vals: &[T]) -> Self {
-        assert_eq!(vals.len(), N * (N + 1) / 2, "Invalid vals size");
-        let mut data = [[T::zero(); N]; N];
-        let mut vals_idx = 0;
+        let mut data = [[T::ZERO; N]; N];
+        let mut idx = 0;
         for i in 0..N {
             for j in i..N {
-                let val = vals[vals_idx];
-                data[i][j] = val; // Add upper
-                data[j][i] = val; // Mirror to lower
-                vals_idx += 1;
+                data[i][j] = vals[idx];
+                data[j][i] = vals[idx];
+                idx += 1;
             }
         }
         Self(data)
     }
+
+    /// Calculate determinant of the matrix.
+    pub fn determinant(&self) -> T {
+        let mut rows = self.as_row_vectors();
+        let mut det = T::ONE;
+        let mut swaps = 0;
+        for i in 0..N {
+            let (row, max) = Self::find_pivot(&rows, i, i);
+            if max == T::ZERO {
+                return T::ZERO;
+            }
+            if row != i {
+                rows.swap(row, i);
+                swaps += 1;
+            }
+            let val = rows[i].0[i];
+            det *= val;
+            let row_i = rows[i];
+            for j in (i + 1)..N {
+                let factor = rows[j].0[i] / val;
+                if factor != T::ZERO {
+                    rows[j].sub_assign_scaled_from(&row_i, factor, i);
+                }
+            }
+        }
+        if swaps % 2 == 1 { T::ZERO - det } else { det }
+    }
+
+    /// Invert the matrix. Returns None if singular.
+    pub fn invert(&self) -> Option<Self> {
+        let mut rows = self.as_row_vectors();
+        let mut inv_rows = Self::identity().as_row_vectors();
+        for i in 0..N {
+            let (pivot_row, max) = Self::find_pivot(&rows, i, i);
+            if max == T::ZERO {
+                return None;
+            }
+            if pivot_row != i {
+                rows.swap(pivot_row, i);
+                inv_rows.swap(pivot_row, i);
+            }
+            let pivot_val = rows[i].0[i];
+            rows[i] /= pivot_val;
+            inv_rows[i] /= pivot_val;
+            let row_i = rows[i];
+            let inv_row_i = inv_rows[i];
+            for j in 0..N {
+                if i != j {
+                    let factor = rows[j].0[i];
+                    if factor != T::ZERO {
+                        rows[j].sub_assign_scaled_from(&row_i, factor, i);
+                        inv_rows[j].sub_assign_scaled(&inv_row_i, factor);
+                    }
+                }
+            }
+        }
+        Some(Self(array::from_fn(|i| inv_rows[i].0)))
+    }
 }
 
-// [[T; N]; M] <-> Matrix<T, N, M>
-impl<T: Field, const N: usize, const M: usize> From<[[T; N]; M]> for Matrix<T, N, M> {
-    #[inline(always)]
-    fn from(value: [[T; N]; M]) -> Self {
-        Self(value)
-    }
-}
-impl<T: Field, const N: usize, const M: usize> From<Matrix<T, N, M>> for [[T; N]; M] {
-    #[inline(always)]
-    fn from(value: Matrix<T, N, M>) -> Self {
-        value.0
-    }
-}
-// Indexing
-impl<T: Field, const N: usize, const M: usize> Index<(usize, usize)> for Matrix<T, N, M> {
+impl<T: Numeric, const N: usize, const M: usize> Index<(usize, usize)> for Matrix<T, N, M> {
     type Output = T;
     fn index(&self, index: (usize, usize)) -> &Self::Output {
         &self.0[index.0][index.1]
     }
 }
-impl<T: Field, const N: usize, const M: usize> IndexMut<(usize, usize)> for Matrix<T, N, M> {
+impl<T: Numeric, const N: usize, const M: usize> IndexMut<(usize, usize)> for Matrix<T, N, M> {
     fn index_mut(&mut self, index: (usize, usize)) -> &mut Self::Output {
         &mut self.0[index.0][index.1]
     }
 }
-// Matrix x Matrix operations
-impl<T: Field, const N: usize, const M: usize> Add for Matrix<T, N, M> {
+impl<T: Numeric, const N: usize, const M: usize> From<[[T; N]; M]> for Matrix<T, N, M> {
+    #[inline(always)]
+    fn from(value: [[T; N]; M]) -> Self {
+        Self(value)
+    }
+}
+impl<T: Numeric, const N: usize, const M: usize> From<Matrix<T, N, M>> for [[T; N]; M] {
+    #[inline(always)]
+    fn from(value: Matrix<T, N, M>) -> Self {
+        value.0
+    }
+}
+impl<T: Numeric + Debug, const N: usize, const M: usize> fmt::Display for Matrix<T, N, M> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "Matrix([")?;
+        for row in self.0.iter() {
+            writeln!(f, "  {:?}", row)?;
+        }
+        write!(f, "])")
+    }
+}
+impl<T: Numeric, const N: usize, const M: usize> Add for Matrix<T, N, M> {
     type Output = Self;
+    #[inline(always)]
     fn add(self, rhs: Self) -> Self::Output {
         Self(array::from_fn(|i| {
-            array::from_fn(|j| self[(i, j)] + rhs[(i, j)])
+            array::from_fn(|j| self.0[i][j] + rhs.0[i][j])
         }))
     }
 }
-impl<T: Field, const N: usize, const M: usize> Sub for Matrix<T, N, M> {
+impl<T: Numeric, const N: usize, const M: usize> AddAssign for Matrix<T, N, M> {
+    #[inline(always)]
+    fn add_assign(&mut self, rhs: Self) {
+        for i in 0..M {
+            for j in 0..N {
+                self.0[i][j] += rhs.0[i][j];
+            }
+        }
+    }
+}
+impl<T: Numeric, const N: usize, const M: usize> Mul<T> for Matrix<T, N, M> {
     type Output = Self;
+    #[inline(always)]
+    fn mul(self, rhs: T) -> Self::Output {
+        Self(self.0.map(|v| v.map(|e| e * rhs)))
+    }
+}
+impl<T: Numeric, const N: usize, const M: usize> MulAssign<T> for Matrix<T, N, M> {
+    #[inline(always)]
+    fn mul_assign(&mut self, rhs: T) {
+        for row in self.0.iter_mut() {
+            for e in row.iter_mut() {
+                *e *= rhs;
+            }
+        }
+    }
+}
+impl<T: Numeric, const N: usize, const M: usize> Sub for Matrix<T, N, M> {
+    type Output = Self;
+    #[inline(always)]
     fn sub(self, rhs: Self) -> Self::Output {
         Self(array::from_fn(|i| {
-            array::from_fn(|j| self[(i, j)] - rhs[(i, j)])
+            array::from_fn(|j| self.0[i][j] - rhs.0[i][j])
         }))
     }
 }
-// Vector x Matrix operations
-impl<T: Field, const N: usize, const M: usize> Mul<Vector<T, N>> for Matrix<T, N, M> {
-    type Output = Vector<T, M>;
-    fn mul(self, rhs: Vector<T, N>) -> Self::Output {
-        let scalars = rhs.as_array();
-        let cols = self.as_column_arrays();
-        let combination = cols
-            .map(|e| Vector::from(e))
-            .into_iter()
-            .zip(scalars.into_iter());
-        Vector::from_lc(combination)
-    }
-}
-// Scalar x Matrix operations
-impl<T: Field, const N: usize, const M: usize> Mul<T> for Matrix<T, N, M> {
-    type Output = Self;
-    fn mul(self, rhs: T) -> Self::Output {
-        Self(self.0.map(|e| (Vector::from(e) * rhs).into()))
-    }
-}
-impl<T: Field, const N: usize, const M: usize> Div<T> for Matrix<T, N, M> {
-    type Output = Self;
-    fn div(self, rhs: T) -> Self::Output {
-        if rhs == T::zero() {
-            panic!("division by zero")
+impl<T: Numeric, const N: usize, const M: usize> SubAssign for Matrix<T, N, M> {
+    #[inline(always)]
+    fn sub_assign(&mut self, rhs: Self) {
+        for i in 0..M {
+            for j in 0..N {
+                self.0[i][j] -= rhs.0[i][j];
+            }
         }
-        Self(self.0.map(|e| (Vector::from(e) / rhs).into()))
     }
 }
-impl<T: Field + Debug, const N: usize, const M: usize> fmt::Display for Matrix<T, N, M> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "Matrix([").unwrap();
-        self.0
-            .iter()
-            .for_each(|e| writeln!(f, "  {:?}", e).unwrap());
-        write!(f, "])")
+impl<T: Numeric, const N: usize, const M: usize> Div<T> for Matrix<T, N, M> {
+    type Output = Self;
+    #[inline(always)]
+    fn div(self, rhs: T) -> Self::Output {
+        Self(self.0.map(|v| v.map(|e| e / rhs)))
+    }
+}
+impl<T: Numeric, const N: usize, const M: usize> DivAssign<T> for Matrix<T, N, M> {
+    #[inline(always)]
+    fn div_assign(&mut self, rhs: T) {
+        for row in self.0.iter_mut() {
+            for e in row.iter_mut() {
+                *e /= rhs;
+            }
+        }
+    }
+}
+// Vector Matrix product
+impl<T: Numeric, const N: usize, const M: usize> Mul<Vector<T, N>> for Matrix<T, N, M> {
+    type Output = Vector<T, M>;
+    #[inline(always)]
+    fn mul(self, rhs: Vector<T, N>) -> Self::Output {
+        let mut out = [T::ZERO; M];
+        for i in 0..M {
+            let mut sum = T::ZERO;
+            for j in 0..N {
+                sum += self.0[i][j] * rhs.0[j];
+            }
+            out[i] = sum;
+        }
+        Vector::from(out)
+    }
+}
+impl<T: Numeric, const N: usize, const M: usize> Mul<Matrix<T, N, M>> for Vector<T, N> {
+    type Output = Vector<T, M>;
+    #[inline(always)]
+    fn mul(self, rhs: Matrix<T, N, M>) -> Self::Output {
+        rhs.mul(self)
+    }
+}
+
+// Matrix multiplication: Matrix<T, P, M> * Matrix<T, N, P> -> Matrix<T, N, M>
+impl<T: Numeric, const N: usize, const M: usize, const P: usize> Mul<Matrix<T, N, P>>
+    for Matrix<T, P, M>
+{
+    type Output = Matrix<T, N, M>;
+    #[inline(always)]
+    fn mul(self, rhs: Matrix<T, N, P>) -> Self::Output {
+        let rhs_cols = rhs.as_column_vectors();
+        let mut out = [[T::ZERO; N]; M];
+        for j in 0..N {
+            let col_res = self * rhs_cols[j];
+            for i in 0..M {
+                out[i][j] = col_res.0[i];
+            }
+        }
+        Matrix(out)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    #[allow(unused_imports)]
     use super::*;
     #[test]
-    fn test_matrix_constructors() {}
+    fn test_matrix_constructors() {
+        assert_eq!(
+            Matrix::<i32, 2, 2>::zero(),
+            Matrix([[0, 0], [0, 0]]),
+            "zero mat creation"
+        );
+        assert_eq!(
+            Matrix::<i32, 2, 2>::identity(),
+            Matrix([[1, 0], [0, 1]]),
+            "identity mat creation"
+        );
+        assert_eq!(
+            Matrix::from_diagonal([1, 2]),
+            Matrix([[1, 0], [0, 2]]),
+            "diagonal mat creation"
+        );
+        assert_eq!(
+            Matrix::from_upper_triangular(&[1, 2, 3]),
+            Matrix([[1, 2], [0, 3]]),
+            "upper tri creation"
+        );
+        assert_eq!(
+            Matrix::from_lower_triangular(&[1, 2, 3]),
+            Matrix([[1, 0], [2, 3]]),
+            "lower tri creation"
+        );
+        assert_eq!(
+            Matrix::from_symmetric(&[1, 2, 3]),
+            Matrix([[1, 2], [2, 3]]),
+            "symmetric creation"
+        );
+        assert_eq!(
+            Matrix::from_outer_product(Vector([1, 2]), Vector([3, 4])),
+            Matrix([[3, 4], [6, 8]]),
+            "outer product creation"
+        );
+    }
     #[test]
-    fn test_matrix_linear_sys() {}
+    fn test_matrix_arithmetic() {
+        let mut m1 = Matrix([[1, 2], [3, 4]]);
+        let m2 = Matrix([[5, 6], [7, 8]]);
+        assert_eq!(m1 + m2, Matrix([[6, 8], [10, 12]]), "mat addition");
+        assert_eq!(m1 - m2, Matrix([[-4, -4], [-4, -4]]), "mat subtraction");
+        assert_eq!(m1 * 2, Matrix([[2, 4], [6, 8]]), "scalar multiplication");
+        m1 += m2;
+        assert_eq!(m1, Matrix([[6, 8], [10, 12]]), "mat add-assign");
+        m1 *= 2;
+        assert_eq!(m1, Matrix([[12, 16], [20, 24]]), "scalar mul-assign");
+        let res: Vector<i32, 2> = Matrix([[1, 2], [3, 4]]) * Vector([1, 2]);
+        assert_eq!(res, Vector([5, 11]), "mat-vec multiplication");
+    }
+    #[test]
+    fn test_matrix_advanced() {
+        let m = Matrix([[1, 2], [3, 4]]);
+        assert_eq!(m.transpose(), Matrix([[1, 3], [2, 4]]), "transpose");
+        assert_eq!(
+            m.as_row_vectors(),
+            [Vector([1, 2]), Vector([3, 4])],
+            "as row vectors"
+        );
+        assert_eq!(
+            m.as_column_vectors(),
+            [Vector([1, 3]), Vector([2, 4])],
+            "as col vectors"
+        );
+        let a = Matrix::from([
+            [1.0, 2.0, 0.0, 3.0],
+            [2.0, 4.0, 1.0, 4.0],
+            [3.0, 6.0, 2.0, 5.0],
+        ]);
+        let (c, r) = a.cr_factorize::<2>();
+        assert_eq!(c.0[0].len(), 2, "CR column space dim");
+        assert_eq!(r.0.len(), 2, "CR row space dim");
+
+        let m2 = Matrix([[2.0, 1.0], [1.0, 1.0]]);
+        let m2inv = Matrix([[1.0, -1.0], [-1.0, 2.0]]);
+        assert_eq!(m2inv, m2.invert().unwrap(), "Inversion failed");
+
+        let singular = Matrix([[1.0, 2.0], [2.0, 4.0]]);
+        assert_eq!(singular.determinant(), 0.0, "singular det");
+        assert_eq!(singular.invert(), None, "singular inv");
+    }
+    #[test]
+    fn test_matrix_projection() {
+        let a = Matrix([[1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]);
+        let p = a.projection_matrix::<2>();
+        let b = Vector([1.0, 2.0, 3.0]);
+        let pb = a.project_vector::<2>(b);
+
+        // P^2 = P
+        assert!(
+            (Numeric::abs((p * p).0[0][0] - p.0[0][0])) < f64::EPSILON * 100.0,
+            "P^2 = P check"
+        );
+
+        // Pb is in column space? (b - Pb) should be orthogonal to columns of a
+        let diff = b - pb;
+        assert!(
+            Numeric::abs(diff.dotp(&Vector([1.0, 1.0, 0.0]))) < f64::EPSILON * 100.0,
+            "orthogonality check 1"
+        );
+        assert!(
+            Numeric::abs(diff.dotp(&Vector([0.0, 1.0, 1.0]))) < f64::EPSILON * 100.0,
+            "orthogonality check 2"
+        );
+    }
 }
