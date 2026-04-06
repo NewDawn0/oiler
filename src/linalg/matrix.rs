@@ -33,6 +33,14 @@ impl<T: Numeric, const N: usize, const M: usize> Matrix<T, N, M> {
     pub fn convert<E: Numeric + From<T>>(self) -> Matrix<E, N, M> {
         Matrix(self.0.map(|row| row.map(<E as From<T>>::from)))
     }
+    #[inline(always)]
+    pub fn as_column_arrays(self) -> [[T; M]; N] {
+        array::from_fn(|j| array::from_fn(|i| self.0[i][j]))
+    }
+    #[inline(always)]
+    pub fn as_row_arrays(self) -> [[T; N]; M] {
+        self.0
+    }
     /// Matrix as array of column vectors.
     #[inline(always)]
     pub fn as_column_vectors(self) -> [Vector<T, M>; N] {
@@ -69,7 +77,6 @@ impl<T: Numeric, const N: usize, const M: usize> Matrix<T, N, M> {
     }
 
     /// Matrix rank.
-
     pub fn rank(&self) -> usize {
         let mut rows = self.as_row_vectors();
         let mut r = 0;
@@ -270,11 +277,7 @@ impl<T: Numeric, const N: usize> Matrix<T, N, N> {
                 }
             }
         }
-        if swaps % 2 == 1 {
-            T::ZERO - det
-        } else {
-            det
-        }
+        if swaps % 2 == 1 { T::ZERO - det } else { det }
     }
 
     /// Invert the matrix. Returns None if singular.
