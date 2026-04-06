@@ -58,14 +58,6 @@ fn main() {
 
 ---
 
-## 📦 Roadmap
-
-- [ ] More matrix decompositions
-- [ ] Sparse matrix support
-- [ ] Performance optimizations
-- [ ] Documentation improvements
-
----
 
 ## 📄 License
 
