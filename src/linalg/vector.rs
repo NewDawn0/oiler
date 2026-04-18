@@ -244,18 +244,22 @@ mod tests {
     }
     #[test]
     fn test_vector_arithmetic() {
-        let mut v1 = Vector([1.0, 2.0]);
+        let v1 = Vector([1.0, 2.0]);
         let v2 = Vector([3.0, 4.0]);
         assert_eq!(v1 + v2, Vector([4.0, 6.0]), "vec addition");
         assert_eq!(v1 - v2, Vector([-2.0, -2.0]), "vec subtraction");
         assert_eq!(v1 * 2.0, Vector([2.0, 4.0]), "scalar multiplication");
         assert_eq!(v2 / 2.0, Vector([1.0, 2.0]), "scalar division");
+        let mut v1 = Vector([1.0, 2.0]);
         v1 += v2;
         assert_eq!(v1, Vector([4.0, 6.0]), "vec add-assign");
+        let mut v1 = Vector([1.0, 2.0]);
         v1 -= v2;
         assert_eq!(v1, Vector([1.0, 2.0]), "vec sub-assign");
+        let mut v1 = Vector([1.0, 2.0]);
         v1 *= 2.0;
         assert_eq!(v1, Vector([2.0, 4.0]), "scalar mul-assign");
+        let mut v1 = Vector([1.0, 2.0]);
         v1 /= 2.0;
         assert_eq!(v1, Vector([1.0, 2.0]), "scalar div-assign");
         assert_eq!(
