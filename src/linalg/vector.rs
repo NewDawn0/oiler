@@ -249,7 +249,7 @@ mod tests {
         assert_eq!(v1 + v2, Vector([4.0, 6.0]), "vec addition");
         assert_eq!(v1 - v2, Vector([-2.0, -2.0]), "vec subtraction");
         assert_eq!(v1 * 2.0, Vector([2.0, 4.0]), "scalar multiplication");
-        assert_eq!(v2 / 2.0, Vector([1.0, 2.0]), "scalar division");
+        assert_eq!(v2 / 2.0, Vector([1.5, 2.0]), "scalar division");
         let mut v1 = Vector([1.0, 2.0]);
         v1 += v2;
         assert_eq!(v1, Vector([4.0, 6.0]), "vec add-assign");
@@ -259,9 +259,8 @@ mod tests {
         let mut v1 = Vector([1.0, 2.0]);
         v1 *= 2.0;
         assert_eq!(v1, Vector([2.0, 4.0]), "scalar mul-assign");
-        let mut v1 = Vector([1.0, 2.0]);
         v1 /= 2.0;
-        assert_eq!(v1, Vector([0.5, 1.0]), "scalar div-assign");
+        assert_eq!(v1, Vector([1.0, 2.0]), "scalar div-assign");
         assert_eq!(
             Vector([1.0, 2.0]).dotp(&Vector([3.0, 4.0])),
             11.0,
